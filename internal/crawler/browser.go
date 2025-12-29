@@ -9,6 +9,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -116,8 +117,8 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 	}
 	defer page.Close()
 
-	// Set page timeout
-	page = page.Timeout(DefaultPageLoadTimeout)
+	// Set page timeout (longer for Cloudflare challenge)
+	page = page.Timeout(60 * time.Second)
 
 	// Set user agent
 	err = page.SetUserAgent(&proto.NetworkSetUserAgentOverride{
@@ -126,6 +127,8 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 	if err != nil {
 		// Non-fatal error, continue
 	}
+
+	log.Info().Str("url", url).Msg("Browser navigating to URL")
 
 	// Navigate to URL
 	if err := page.Navigate(url); err != nil {
@@ -137,28 +140,39 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 		return "", fmt.Errorf("failed to wait for page load: %w", err)
 	}
 
-	// Wait for specific selector if provided (max 15 seconds)
+	log.Info().Msg("Page loaded, waiting for Cloudflare challenge...")
+
+	// Wait longer for Cloudflare challenge to complete (5 seconds)
+	time.Sleep(5 * time.Second)
+
+	// Wait for specific selector if provided (max 20 seconds for content after Cloudflare)
 	if waitSelector != "" {
-		waitCtx, cancel := context.WithTimeout(ctx, DefaultWaitTimeout)
+		waitCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
 		// Try to find the element with timeout
 		page = page.Context(waitCtx)
-		_, err := page.Element(waitSelector)
+		elem, err := page.Element(waitSelector)
 		if err != nil {
+			log.Warn().Str("selector", waitSelector).Err(err).Msg("Selector not found, continuing anyway")
 			// Selector not found within timeout, but continue anyway
 			// The page might still have useful content
+		} else {
+			log.Info().Str("selector", waitSelector).Msg("Found target element")
+			_ = elem // Use elem to avoid unused variable warning
 		}
 	}
 
 	// Additional wait for dynamic content
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	// Get rendered HTML
 	html, err := page.HTML()
 	if err != nil {
 		return "", fmt.Errorf("failed to get HTML: %w", err)
 	}
+
+	log.Info().Int("htmlLength", len(html)).Msg("Browser got HTML")
 
 	return html, nil
 }

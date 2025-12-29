@@ -132,11 +132,9 @@ func (c *HTTPCrawler) initCookies(ctx context.Context) {
 }
 
 // CrawlNewVideos crawls the latest video list
+// Uses headless browser as primary method due to Cloudflare protection
 func (c *HTTPCrawler) CrawlNewVideos(ctx context.Context, pages int) ([]*model.Video, error) {
 	var allVideos []*model.Video
-
-	// Initialize cookies before crawling
-	c.initCookies(ctx)
 
 	for page := 1; page <= pages; page++ {
 		select {
@@ -152,47 +150,29 @@ func (c *HTTPCrawler) CrawlNewVideos(ctx context.Context, pages int) ([]*model.V
 
 		log.Info().Str("url", pageURL).Int("page", page).Msg("Crawling new videos page")
 
-		html, err := c.fetchWithRetry(ctx, pageURL)
+		// Try headless browser first (bypasses Cloudflare)
+		videos, err := c.crawlWithBrowser(ctx, pageURL)
 		if err != nil {
-			log.Warn().Err(err).Str("url", pageURL).Msg("HTTP fetch failed, trying browser")
-			// If first page fails with HTTP, try headless browser
-			if page == 1 {
-				videos, browserErr := c.crawlWithBrowser(ctx, pageURL)
-				if browserErr == nil && len(videos) > 0 {
-					log.Info().Int("count", len(videos)).Msg("Browser crawl succeeded")
-					allVideos = append(allVideos, videos...)
-					continue
-				}
-				log.Warn().Err(browserErr).Msg("Browser crawl also failed")
+			log.Warn().Err(err).Str("url", pageURL).Msg("Browser crawl failed, trying HTTP")
+			// Fallback to HTTP (might work if no Cloudflare)
+			html, httpErr := c.fetchWithRetry(ctx, pageURL)
+			if httpErr != nil {
+				log.Warn().Err(httpErr).Msg("HTTP fetch also failed")
+				continue
 			}
-			continue
-		}
-
-		videos, err := c.parser.ParseVideoList(html)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to parse video list")
-			continue
-		}
-
-		log.Info().Int("count", len(videos)).Int("page", page).Msg("Parsed videos from HTTP response")
-
-		// If first page returns empty, try headless browser
-		if page == 1 && len(videos) == 0 {
-			log.Warn().Msg("HTTP returned 0 videos, trying browser fallback")
-			browserVideos, browserErr := c.crawlWithBrowser(ctx, pageURL)
-			if browserErr == nil && len(browserVideos) > 0 {
-				log.Info().Int("count", len(browserVideos)).Msg("Browser fallback succeeded")
-				videos = browserVideos
-			} else {
-				log.Warn().Err(browserErr).Msg("Browser fallback also returned 0 videos")
+			videos, err = c.parser.ParseVideoList(html)
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to parse video list")
+				continue
 			}
 		}
 
+		log.Info().Int("count", len(videos)).Int("page", page).Msg("Parsed videos")
 		allVideos = append(allVideos, videos...)
 
-		// Add delay between pages (like Java version)
+		// Add delay between pages
 		if page < pages {
-			time.Sleep(2 * time.Second)
+			time.Sleep(3 * time.Second)
 		}
 	}
 
@@ -211,14 +191,12 @@ func (c *HTTPCrawler) CrawlVideoDetail(ctx context.Context, detailURL string) (*
 }
 
 // CrawlByActor crawls videos by actor name
+// Uses headless browser as primary method due to Cloudflare protection
 func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit int) ([]*model.Video, error) {
 	var allVideos []*model.Video
 	page := 1
 	// Estimate max pages needed (assuming ~12 videos per page)
 	maxPages := (limit + 11) / 12
-
-	// Initialize cookies before crawling
-	c.initCookies(ctx)
 
 	encodedName := url.PathEscape(actorName)
 
@@ -236,13 +214,12 @@ func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit 
 
 		log.Info().Str("url", pageURL).Str("actor", actorName).Int("page", page).Msg("Crawling actor videos")
 
-		html, err := c.fetchWithRetry(ctx, pageURL)
-		if err != nil {
-			break
-		}
-
-		videos, err := c.parser.ParseVideoList(html)
+		// Try headless browser (bypasses Cloudflare)
+		videos, err := c.crawlWithBrowser(ctx, pageURL)
 		if err != nil || len(videos) == 0 {
+			if err != nil {
+				log.Warn().Err(err).Msg("Browser crawl failed")
+			}
 			break
 		}
 
@@ -255,7 +232,7 @@ func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit 
 		}
 
 		page++
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 
 	return allVideos, nil
@@ -268,13 +245,11 @@ func (c *HTTPCrawler) CrawlByCode(ctx context.Context, code string) (*model.Vide
 }
 
 // CrawlByKeyword searches and crawls videos by keyword
+// Uses headless browser as primary method due to Cloudflare protection
 func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit int) ([]*model.Video, error) {
 	var allVideos []*model.Video
 	page := 1
 	maxPages := (limit + 11) / 12
-
-	// Initialize cookies before crawling
-	c.initCookies(ctx)
 
 	encodedKeyword := url.PathEscape(keyword)
 
@@ -292,35 +267,12 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 
 		log.Info().Str("url", pageURL).Str("keyword", keyword).Int("page", page).Msg("Crawling keyword search")
 
-		html, err := c.fetchWithRetry(ctx, pageURL)
-		if err != nil {
-			// Try headless browser on first page
-			if page == 1 {
-				browserVideos, browserErr := c.crawlWithBrowser(ctx, pageURL)
-				if browserErr == nil && len(browserVideos) > 0 {
-					allVideos = append(allVideos, browserVideos...)
-					page++
-					continue
-				}
+		// Try headless browser first (bypasses Cloudflare)
+		videos, err := c.crawlWithBrowser(ctx, pageURL)
+		if err != nil || len(videos) == 0 {
+			if err != nil {
+				log.Warn().Err(err).Msg("Browser crawl failed")
 			}
-			break
-		}
-
-		videos, err := c.parser.ParseVideoList(html)
-		if err != nil {
-			break
-		}
-
-		// If first page returns empty, try headless browser
-		if page == 1 && len(videos) == 0 {
-			log.Warn().Msg("HTTP returned 0 videos for keyword search, trying browser")
-			browserVideos, browserErr := c.crawlWithBrowser(ctx, pageURL)
-			if browserErr == nil && len(browserVideos) > 0 {
-				videos = browserVideos
-			}
-		}
-
-		if len(videos) == 0 {
 			break
 		}
 
@@ -333,7 +285,7 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 		}
 
 		page++
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 
 	return allVideos, nil
