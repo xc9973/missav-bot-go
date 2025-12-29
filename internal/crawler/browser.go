@@ -3,6 +3,7 @@ package crawler
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -56,9 +57,23 @@ func NewBrowserWithConfig(cfg *BrowserConfig) (*Browser, error) {
 		cfg = DefaultBrowserConfig()
 	}
 
-	// Create launcher with configuration
-	l := launcher.New().
-		Headless(cfg.Headless).
+	// Try to use system Chrome first (set via CHROME_PATH env var)
+	// This is important for Docker containers where we install chromium via apk
+	var l *launcher.Launcher
+	
+	// Check for system Chrome path
+	chromePath := os.Getenv("CHROME_PATH")
+	if chromePath != "" {
+		log.Info().Str("chromePath", chromePath).Msg("Using system Chrome")
+		l = launcher.New().Bin(chromePath)
+	} else {
+		// Fallback to auto-download
+		log.Info().Msg("Using auto-downloaded Chrome")
+		l = launcher.New()
+	}
+
+	// Configure launcher
+	l = l.Headless(cfg.Headless).
 		Set("disable-gpu").
 		Set("no-sandbox").
 		Set("disable-dev-shm-usage").
@@ -69,7 +84,8 @@ func NewBrowserWithConfig(cfg *BrowserConfig) (*Browser, error) {
 		Set("metrics-recording-only").
 		Set("mute-audio").
 		Set("no-first-run").
-		Set("safebrowsing-disable-auto-update")
+		Set("safebrowsing-disable-auto-update").
+		Set("disable-setuid-sandbox")
 
 	// Configure proxy if provided
 	if cfg.ProxyURL != "" {
@@ -77,10 +93,12 @@ func NewBrowserWithConfig(cfg *BrowserConfig) (*Browser, error) {
 	}
 
 	// Launch browser
+	log.Info().Msg("Launching browser...")
 	controlURL, err := l.Launch()
 	if err != nil {
 		return nil, fmt.Errorf("failed to launch browser: %w", err)
 	}
+	log.Info().Str("controlURL", controlURL).Msg("Browser launched")
 
 	// Connect to browser
 	browser := rod.New().ControlURL(controlURL)
@@ -88,10 +106,7 @@ func NewBrowserWithConfig(cfg *BrowserConfig) (*Browser, error) {
 		return nil, fmt.Errorf("failed to connect to browser: %w", err)
 	}
 
-	// Set default user agent
-	if cfg.UserAgent != "" {
-		// User agent will be set per page
-	}
+	log.Info().Msg("Browser connected successfully")
 
 	return &Browser{
 		browser:  browser,
