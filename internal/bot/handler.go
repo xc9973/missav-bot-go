@@ -89,31 +89,31 @@ func (h *Handler) handleCommand(ctx context.Context, msg *tgbotapi.Message) {
 	case "status":
 		h.handleStatus(ctx, chatID)
 	default:
-		h.sendError(chatID, "Unknown command. Use /help to see available commands.")
+		h.sendError(chatID, "未知命令。使用 /help 查看可用命令。")
 	}
 }
 
 // handleStart handles /start and /help commands (Requirement 3.1)
 func (h *Handler) handleStart(ctx context.Context, chatID int64) {
-	helpText := `🤖 *MissAV Bot Help*
+	helpText := `🤖 *MissAV 机器人帮助*
 
-*Subscription Commands:*
-/subscribe \- Subscribe to all new videos
-/subscribe actress\_name \- Subscribe to a specific actress
-/subscribe \#tag \- Subscribe to a specific tag
-/unsubscribe \- Unsubscribe from all
-/unsubscribe keyword \- Unsubscribe from specific keyword
-/list \- List your subscriptions
+*订阅命令:*
+/subscribe \- 订阅所有新视频
+/subscribe 演员名 \- 订阅特定演员
+/subscribe \#标签 \- 订阅特定标签
+/unsubscribe \- 取消所有订阅
+/unsubscribe 关键词 \- 取消特定订阅
+/list \- 查看我的订阅
 
-*Search Commands:*
-/search keyword \- Search videos \(max 10 results\)
-/latest \[page\] \- Show latest videos
+*搜索命令:*
+/search 关键词 \- 搜索视频（最多10条）
+/latest \[页码\] \- 查看最新视频
 
-*Admin Commands:*
-/crawl actor/code/search keyword \- Manual crawl
-/status \- Show bot statistics
+*管理命令:*
+/crawl actor/code/search 关键词 \- 手动爬取
+/status \- 查看机器人状态
 
-_Tip: In groups, the bot auto\-subscribes to all videos\._`
+_提示: 在群组中，机器人会自动订阅所有视频_`
 
 	if err := h.telegram.SendMarkdown(chatID, helpText); err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send help message")
@@ -155,18 +155,18 @@ func (h *Handler) handleSubscribe(ctx context.Context, chatID int64, chatType st
 
 	if err := h.store.CreateSubscription(ctx, sub); err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to create subscription")
-		h.sendError(chatID, "Failed to create subscription. Please try again.")
+		h.sendError(chatID, "创建订阅失败，请重试。")
 		return
 	}
 
 	var message string
 	switch subType {
 	case model.SubTypeAll:
-		message = "✅ Subscribed to all new videos!"
+		message = "✅ 已订阅所有新视频！"
 	case model.SubTypeActress:
-		message = fmt.Sprintf("✅ Subscribed to actress: %s", keyword)
+		message = fmt.Sprintf("✅ 已订阅演员: %s", keyword)
 	case model.SubTypeTag:
-		message = fmt.Sprintf("✅ Subscribed to tag: #%s", keyword)
+		message = fmt.Sprintf("✅ 已订阅标签: #%s", keyword)
 	}
 
 	if err := h.telegram.SendMessage(chatID, message); err != nil {
@@ -182,10 +182,10 @@ func (h *Handler) handleUnsubscribe(ctx context.Context, chatID int64, args stri
 		// Unsubscribe from all (Requirement 3.5)
 		if err := h.store.DeleteAllSubscriptions(ctx, chatID); err != nil {
 			log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to delete all subscriptions")
-			h.sendError(chatID, "Failed to unsubscribe. Please try again.")
+			h.sendError(chatID, "取消订阅失败，请重试。")
 			return
 		}
-		if err := h.telegram.SendMessage(chatID, "✅ Unsubscribed from all notifications."); err != nil {
+		if err := h.telegram.SendMessage(chatID, "✅ 已取消所有订阅。"); err != nil {
 			log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send unsubscribe confirmation")
 		}
 		return
@@ -195,11 +195,11 @@ func (h *Handler) handleUnsubscribe(ctx context.Context, chatID int64, args stri
 	subType, keyword := DetermineSubscriptionType(args)
 	if err := h.store.DeleteSubscription(ctx, chatID, string(subType), keyword); err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Str("keyword", keyword).Msg("Failed to delete subscription")
-		h.sendError(chatID, "Failed to unsubscribe. Please try again.")
+		h.sendError(chatID, "取消订阅失败，请重试。")
 		return
 	}
 
-	message := fmt.Sprintf("✅ Unsubscribed from: %s", args)
+	message := fmt.Sprintf("✅ 已取消订阅: %s", args)
 	if err := h.telegram.SendMessage(chatID, message); err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send unsubscribe confirmation")
 	}
@@ -211,28 +211,28 @@ func (h *Handler) handleList(ctx context.Context, chatID int64) {
 	subs, err := h.store.GetSubscriptions(ctx, chatID)
 	if err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to get subscriptions")
-		h.sendError(chatID, "Failed to get subscriptions. Please try again.")
+		h.sendError(chatID, "获取订阅列表失败，请重试。")
 		return
 	}
 
 	if len(subs) == 0 {
-		if err := h.telegram.SendMessage(chatID, "📭 You have no active subscriptions.\nUse /subscribe to start receiving notifications."); err != nil {
+		if err := h.telegram.SendMessage(chatID, "📭 你还没有任何订阅。\n使用 /subscribe 开始接收通知。"); err != nil {
 			log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send empty list message")
 		}
 		return
 	}
 
 	var lines []string
-	lines = append(lines, "📋 *Your Subscriptions:*\n")
+	lines = append(lines, "📋 *我的订阅:*\n")
 	for i, sub := range subs {
 		var line string
 		switch sub.Type {
 		case model.SubTypeAll:
-			line = fmt.Sprintf("%d\\. 🌐 All videos", i+1)
+			line = fmt.Sprintf("%d\\. 🌐 所有视频", i+1)
 		case model.SubTypeActress:
-			line = fmt.Sprintf("%d\\. 👩 Actress: %s", i+1, push.EscapeMarkdown(sub.Keyword))
+			line = fmt.Sprintf("%d\\. 👩 演员: %s", i+1, push.EscapeMarkdown(sub.Keyword))
 		case model.SubTypeTag:
-			line = fmt.Sprintf("%d\\. 🏷 Tag: \\#%s", i+1, push.EscapeMarkdown(sub.Keyword))
+			line = fmt.Sprintf("%d\\. 🏷 标签: \\#%s", i+1, push.EscapeMarkdown(sub.Keyword))
 		}
 		lines = append(lines, line)
 	}
@@ -246,7 +246,7 @@ func (h *Handler) handleList(ctx context.Context, chatID int64) {
 // Returns at most 10 results (Property 5)
 func (h *Handler) handleSearch(ctx context.Context, chatID int64, keyword string) {
 	if keyword == "" {
-		h.sendError(chatID, "Please provide a search keyword. Example: /search ABC-123")
+		h.sendError(chatID, "请提供搜索关键词。例如: /search ABC-123")
 		return
 	}
 
@@ -254,19 +254,19 @@ func (h *Handler) handleSearch(ctx context.Context, chatID int64, keyword string
 	videos, err := h.store.SearchVideos(ctx, keyword, 10)
 	if err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Str("keyword", keyword).Msg("Failed to search videos")
-		h.sendError(chatID, "Failed to search videos. Please try again.")
+		h.sendError(chatID, "搜索失败，请重试。")
 		return
 	}
 
 	if len(videos) == 0 {
-		if err := h.telegram.SendMessage(chatID, fmt.Sprintf("🔍 No videos found for: %s", keyword)); err != nil {
+		if err := h.telegram.SendMessage(chatID, fmt.Sprintf("🔍 未找到相关视频: %s", keyword)); err != nil {
 			log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send no results message")
 		}
 		return
 	}
 
 	var lines []string
-	lines = append(lines, fmt.Sprintf("🔍 *Search Results for: %s*\n", push.EscapeMarkdown(keyword)))
+	lines = append(lines, fmt.Sprintf("🔍 *搜索结果: %s*\n", push.EscapeMarkdown(keyword)))
 	for i, video := range videos {
 		line := fmt.Sprintf("%d\\. *%s*", i+1, push.EscapeMarkdown(video.Code))
 		if video.Title != "" {
@@ -303,19 +303,19 @@ func (h *Handler) handleLatest(ctx context.Context, chatID int64, args string) {
 	videos, err := h.store.GetLatestVideos(ctx, limit, offset)
 	if err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to get latest videos")
-		h.sendError(chatID, "Failed to get latest videos. Please try again.")
+		h.sendError(chatID, "获取最新视频失败，请重试。")
 		return
 	}
 
 	if len(videos) == 0 {
-		if err := h.telegram.SendMessage(chatID, "📭 No videos found."); err != nil {
+		if err := h.telegram.SendMessage(chatID, "📭 暂无视频。"); err != nil {
 			log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send no videos message")
 		}
 		return
 	}
 
 	var lines []string
-	lines = append(lines, fmt.Sprintf("📺 *Latest Videos \\(Page %d\\)*\n", page))
+	lines = append(lines, fmt.Sprintf("📺 *最新视频（第 %d 页）*\n", page))
 	for i, video := range videos {
 		line := fmt.Sprintf("%d\\. *%s*", i+1, push.EscapeMarkdown(video.Code))
 		if video.Actresses != "" {
@@ -329,7 +329,7 @@ func (h *Handler) handleLatest(ctx context.Context, chatID int64, args string) {
 
 	// Add pagination hint
 	if len(videos) == limit {
-		lines = append(lines, fmt.Sprintf("\n_Use /latest %d for next page_", page+1))
+		lines = append(lines, fmt.Sprintf("\n_使用 /latest %d 查看下一页_", page+1))
 	}
 
 	if err := h.telegram.SendMarkdown(chatID, strings.Join(lines, "\n")); err != nil {
@@ -340,7 +340,7 @@ func (h *Handler) handleLatest(ctx context.Context, chatID int64, args string) {
 // handleCrawl handles /crawl command (Requirement 3.10)
 func (h *Handler) handleCrawl(ctx context.Context, chatID int64, chatType string, args string) {
 	if args == "" {
-		h.sendError(chatID, "Please specify crawl type. Examples:\n/crawl actor 三上悠亜\n/crawl code ABC-123\n/crawl search keyword")
+		h.sendError(chatID, "请指定爬取类型。例如:\n/crawl actor 三上悠亜\n/crawl code ABC-123\n/crawl search 关键词")
 		return
 	}
 
@@ -352,12 +352,12 @@ func (h *Handler) handleCrawl(ctx context.Context, chatID int64, chatType string
 	}
 
 	if keyword == "" && crawlType != "new" {
-		h.sendError(chatID, "Please provide a keyword for crawling.")
+		h.sendError(chatID, "请提供爬取关键词。")
 		return
 	}
 
 	// Send acknowledgment
-	if err := h.telegram.SendMessage(chatID, "🔄 Starting crawl... This may take a moment."); err != nil {
+	if err := h.telegram.SendMessage(chatID, "🔄 开始爬取... 请稍候。"); err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send crawl acknowledgment")
 	}
 
@@ -381,18 +381,18 @@ func (h *Handler) handleCrawl(ctx context.Context, chatID int64, chatType string
 		case "new":
 			videos, err = h.crawler.CrawlNewVideos(ctx, 2)
 		default:
-			h.sendError(chatID, "Unknown crawl type. Use: actor, code, search, or new")
+			h.sendError(chatID, "未知爬取类型。可用: actor, code, search, new")
 			return
 		}
 
 		if err != nil {
 			log.Error().Err(err).Str("type", crawlType).Str("keyword", keyword).Msg("Crawl failed")
-			h.sendError(chatID, fmt.Sprintf("❌ Crawl failed: %s", err.Error()))
+			h.sendError(chatID, fmt.Sprintf("❌ 爬取失败: %s", err.Error()))
 			return
 		}
 
 		if len(videos) == 0 {
-			if err := h.telegram.SendMessage(chatID, "📭 No videos found."); err != nil {
+			if err := h.telegram.SendMessage(chatID, "📭 未找到视频。"); err != nil {
 				log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send no results message")
 			}
 			return
@@ -404,7 +404,7 @@ func (h *Handler) handleCrawl(ctx context.Context, chatID int64, chatType string
 			log.Error().Err(saveErr).Msg("Failed to save crawled videos")
 		}
 
-		message := fmt.Sprintf("✅ Crawl complete!\n📊 Found: %d videos\n💾 Saved: %d new\n🔄 Duplicates: %d", len(videos), saved, duplicates)
+		message := fmt.Sprintf("✅ 爬取完成！\n📊 找到: %d 个视频\n💾 新增: %d 个\n🔄 重复: %d 个", len(videos), saved, duplicates)
 		if err := h.telegram.SendMessage(chatID, message); err != nil {
 			log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send crawl results")
 		}
@@ -424,10 +424,10 @@ func (h *Handler) handleStatus(ctx context.Context, chatID int64) {
 	uptimeStr := formatDuration(uptime)
 
 	var lines []string
-	lines = append(lines, "📊 *Bot Status*\n")
-	lines = append(lines, fmt.Sprintf("🎬 Videos in database: %d", videoCount))
-	lines = append(lines, fmt.Sprintf("⏱ Uptime: %s", uptimeStr))
-	lines = append(lines, fmt.Sprintf("🕐 Started: %s", h.startTime.Format("2006\\-01\\-02 15:04:05")))
+	lines = append(lines, "📊 *机器人状态*\n")
+	lines = append(lines, fmt.Sprintf("🎬 数据库视频数: %d", videoCount))
+	lines = append(lines, fmt.Sprintf("⏱ 运行时间: %s", uptimeStr))
+	lines = append(lines, fmt.Sprintf("🕐 启动时间: %s", h.startTime.Format("2006\\-01\\-02 15:04:05")))
 
 	if err := h.telegram.SendMarkdown(chatID, strings.Join(lines, "\n")); err != nil {
 		log.Error().Err(err).Int64("chatID", chatID).Msg("Failed to send status")
@@ -479,10 +479,10 @@ func formatDuration(d time.Duration) string {
 	minutes := int(d.Minutes()) % 60
 
 	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+		return fmt.Sprintf("%d天 %d小时 %d分钟", days, hours, minutes)
 	}
 	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, minutes)
+		return fmt.Sprintf("%d小时 %d分钟", hours, minutes)
 	}
-	return fmt.Sprintf("%dm", minutes)
+	return fmt.Sprintf("%d分钟", minutes)
 }
