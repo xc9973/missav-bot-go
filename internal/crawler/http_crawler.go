@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/user/missav-bot-go/internal/model"
 	"golang.org/x/time/rate"
 )
@@ -329,6 +330,16 @@ func (c *HTTPCrawler) crawlWithBrowser(ctx context.Context, pageURL string) ([]*
 	html, err := browser.FetchRenderedHTML(ctx, pageURL, "div.group")
 	if err != nil {
 		return nil, err
+	}
+
+	// Debug: log HTML length
+	if len(html) > 0 {
+		// Log first 1000 chars for debugging
+		preview := html
+		if len(preview) > 1000 {
+			preview = preview[:1000]
+		}
+		log.Debug().Int("htmlLength", len(html)).Str("preview", preview).Msg("Browser fetched HTML")
 	}
 
 	return c.parser.ParseVideoList(html)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/rs/zerolog/log"
 	"github.com/user/missav-bot-go/internal/model"
 )
 
@@ -37,9 +38,14 @@ func (p *Parser) ParseVideoList(html string) ([]*model.Video, error) {
 
 	var videos []*model.Video
 
+	// Log page title for debugging
+	title := doc.Find("title").Text()
+	log.Debug().Str("pageTitle", title).Msg("Parsing video list")
+
 	// Try to extract from JSON in script tags first (for client-rendered pages)
 	jsonVideos := p.extractVideosFromJSON(doc)
 	if len(jsonVideos) > 0 {
+		log.Info().Int("count", len(jsonVideos)).Msg("Extracted videos from JSON")
 		return jsonVideos, nil
 	}
 
@@ -56,6 +62,7 @@ func (p *Parser) ParseVideoList(html string) ([]*model.Video, error) {
 	for _, selector := range selectors {
 		cards := doc.Find(selector)
 		if cards.Length() > 0 {
+			log.Debug().Str("selector", selector).Int("count", cards.Length()).Msg("Found video cards")
 			videoCards = cards
 			break
 		}
@@ -63,6 +70,7 @@ func (p *Parser) ParseVideoList(html string) ([]*model.Video, error) {
 
 	// If no cards found, try to find links with video codes
 	if videoCards == nil || videoCards.Length() == 0 {
+		log.Debug().Msg("No video cards found, trying to find links with video codes")
 		doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
 			href, exists := s.Attr("href")
 			if !exists {
@@ -75,6 +83,7 @@ func (p *Parser) ParseVideoList(html string) ([]*model.Video, error) {
 				}
 			}
 		})
+		log.Debug().Int("count", len(videos)).Msg("Found videos from links")
 		return videos, nil
 	}
 
@@ -86,6 +95,7 @@ func (p *Parser) ParseVideoList(html string) ([]*model.Video, error) {
 		}
 	})
 
+	log.Debug().Int("count", len(videos)).Msg("Parsed videos from cards")
 	return videos, nil
 }
 
