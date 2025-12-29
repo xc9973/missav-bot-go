@@ -1,0 +1,74 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: missav-mysql-go
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-missav_bot}
+      TZ: Asia/Shanghai
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../init.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - missav-network
+
+  bot:
+    build: .
+    container_name: missav-bot-go
+    environment:
+      # Database configuration (Requirement 7.2)
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-missav_bot}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      
+      # Bot configuration (Requirement 7.1)
+      BOT_TOKEN: ${BOT_TOKEN}
+      BOT_USERNAME: ${BOT_USERNAME:-MissavBot}
+      BOT_CHAT_ID: ${BOT_CHAT_ID:-0}
+      
+      # Crawler configuration (Requirement 7.3)
+      CRAWLER_ENABLED: ${CRAWLER_ENABLED:-true}
+      CRAWLER_INTERVAL: ${CRAWLER_INTERVAL:-15m}
+      CRAWLER_INITIAL_PAGES: ${CRAWLER_INITIAL_PAGES:-2}
+      CRAWLER_RATE_LIMIT: ${CRAWLER_RATE_LIMIT:-0.5}
+      CRAWLER_TIMEOUT: ${CRAWLER_TIMEOUT:-30s}
+      CRAWLER_MAX_RETRIES: ${CRAWLER_MAX_RETRIES:-3}
+      CRAWLER_CONCURRENCY: ${CRAWLER_CONCURRENCY:-3}
+      CRAWLER_USER_AGENT: ${CRAWLER_USER_AGENT:-}
+      CRAWLER_PROXY_URL: ${CRAWLER_PROXY_URL:-}
+      
+      # Server configuration
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      
+      # Timezone
+      TZ: Asia/Shanghai
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    # Required for headless browser
+    shm_size: '2gb'
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      - missav-network
+
+volumes:
+  mysql_data:
+
+networks:
+  missav-network:
+    driver: bridge
