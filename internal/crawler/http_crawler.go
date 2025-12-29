@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -20,22 +22,32 @@ const (
 	newVideosPath = "/new"
 	actressesPath = "/actresses/"
 	searchPath    = "/search/"
+	// Cookie 有效期 10 分钟
+	cookieExpireDuration = 10 * time.Minute
 )
 
 // HTTPCrawler implements the Crawler interface using HTTP requests
 type HTTPCrawler struct {
-	client    *http.Client
-	limiter   *rate.Limiter
-	config    *CrawlerConfig
-	parser    *Parser
-	browser   *Browser
-	browserMu sync.Mutex
+	client         *http.Client
+	limiter        *rate.Limiter
+	config         *CrawlerConfig
+	parser         *Parser
+	browser        *Browser
+	browserMu      sync.Mutex
+	cookieInitTime time.Time
+	cookieMu       sync.Mutex
 }
 
 // NewHTTPCrawler creates a new HTTP crawler instance
 func NewHTTPCrawler(cfg *CrawlerConfig) (*HTTPCrawler, error) {
 	if cfg == nil {
 		cfg = DefaultCrawlerConfig()
+	}
+
+	// Create cookie jar for session management
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cookie jar: %w", err)
 	}
 
 	// Create HTTP client with connection pooling
@@ -57,6 +69,7 @@ func NewHTTPCrawler(cfg *CrawlerConfig) (*HTTPCrawler, error) {
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   time.Duration(cfg.Timeout) * time.Second,
+		Jar:       jar, // Enable cookie handling
 	}
 
 	// Create rate limiter using token bucket algorithm
@@ -71,9 +84,59 @@ func NewHTTPCrawler(cfg *CrawlerConfig) (*HTTPCrawler, error) {
 	}, nil
 }
 
+// initCookies initializes cookies by making warmup requests to establish a session
+// This is required because the website needs multiple requests to establish a valid session
+func (c *HTTPCrawler) initCookies(ctx context.Context) {
+	c.cookieMu.Lock()
+	defer c.cookieMu.Unlock()
+
+	// Check if cookies are still valid
+	if !c.cookieInitTime.IsZero() && time.Since(c.cookieInitTime) < cookieExpireDuration {
+		log.Debug().
+			Dur("age", time.Since(c.cookieInitTime)).
+			Msg("Cookies still valid, skipping initialization")
+		return
+	}
+
+	if c.cookieInitTime.IsZero() {
+		log.Info().Msg("Initializing cookies (warming up session)...")
+	} else {
+		log.Info().
+			Time("lastInit", c.cookieInitTime).
+			Msg("Cookies expired, re-initializing...")
+	}
+
+	// Make 3 warmup requests to establish session (like Java version)
+	warmupURL := BaseURL + newVideosPath + "?page=2"
+	for i := 1; i <= 3; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		_, err := c.fetch(ctx, warmupURL)
+		if err != nil {
+			log.Warn().Err(err).Int("attempt", i).Msg("Cookie warmup request failed")
+		} else {
+			log.Debug().Int("attempt", i).Msg("Cookie warmup request completed")
+		}
+
+		if i < 3 {
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	c.cookieInitTime = time.Now()
+	log.Info().Msg("Cookie initialization completed")
+}
+
 // CrawlNewVideos crawls the latest video list
 func (c *HTTPCrawler) CrawlNewVideos(ctx context.Context, pages int) ([]*model.Video, error) {
 	var allVideos []*model.Video
+
+	// Initialize cookies before crawling
+	c.initCookies(ctx)
 
 	for page := 1; page <= pages; page++ {
 		select {
@@ -87,33 +150,50 @@ func (c *HTTPCrawler) CrawlNewVideos(ctx context.Context, pages int) ([]*model.V
 			pageURL = fmt.Sprintf("%s?page=%d", pageURL, page)
 		}
 
+		log.Info().Str("url", pageURL).Int("page", page).Msg("Crawling new videos page")
+
 		html, err := c.fetchWithRetry(ctx, pageURL)
 		if err != nil {
+			log.Warn().Err(err).Str("url", pageURL).Msg("HTTP fetch failed, trying browser")
 			// If first page fails with HTTP, try headless browser
 			if page == 1 {
 				videos, browserErr := c.crawlWithBrowser(ctx, pageURL)
 				if browserErr == nil && len(videos) > 0 {
+					log.Info().Int("count", len(videos)).Msg("Browser crawl succeeded")
 					allVideos = append(allVideos, videos...)
 					continue
 				}
+				log.Warn().Err(browserErr).Msg("Browser crawl also failed")
 			}
 			continue
 		}
 
 		videos, err := c.parser.ParseVideoList(html)
 		if err != nil {
+			log.Warn().Err(err).Msg("Failed to parse video list")
 			continue
 		}
 
+		log.Info().Int("count", len(videos)).Int("page", page).Msg("Parsed videos from HTTP response")
+
 		// If first page returns empty, try headless browser
 		if page == 1 && len(videos) == 0 {
+			log.Warn().Msg("HTTP returned 0 videos, trying browser fallback")
 			browserVideos, browserErr := c.crawlWithBrowser(ctx, pageURL)
 			if browserErr == nil && len(browserVideos) > 0 {
+				log.Info().Int("count", len(browserVideos)).Msg("Browser fallback succeeded")
 				videos = browserVideos
+			} else {
+				log.Warn().Err(browserErr).Msg("Browser fallback also returned 0 videos")
 			}
 		}
 
 		allVideos = append(allVideos, videos...)
+
+		// Add delay between pages (like Java version)
+		if page < pages {
+			time.Sleep(2 * time.Second)
+		}
 	}
 
 	return allVideos, nil
@@ -137,6 +217,9 @@ func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit 
 	// Estimate max pages needed (assuming ~12 videos per page)
 	maxPages := (limit + 11) / 12
 
+	// Initialize cookies before crawling
+	c.initCookies(ctx)
+
 	encodedName := url.PathEscape(actorName)
 
 	for page <= maxPages {
@@ -151,6 +234,8 @@ func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit 
 			pageURL = fmt.Sprintf("%s?page=%d", pageURL, page)
 		}
 
+		log.Info().Str("url", pageURL).Str("actor", actorName).Int("page", page).Msg("Crawling actor videos")
+
 		html, err := c.fetchWithRetry(ctx, pageURL)
 		if err != nil {
 			break
@@ -162,6 +247,7 @@ func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit 
 		}
 
 		allVideos = append(allVideos, videos...)
+		log.Info().Int("pageCount", len(videos)).Int("total", len(allVideos)).Msg("Parsed actor videos")
 
 		if len(allVideos) >= limit {
 			allVideos = allVideos[:limit]
@@ -169,6 +255,7 @@ func (c *HTTPCrawler) CrawlByActor(ctx context.Context, actorName string, limit 
 		}
 
 		page++
+		time.Sleep(2 * time.Second)
 	}
 
 	return allVideos, nil
@@ -186,6 +273,9 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 	page := 1
 	maxPages := (limit + 11) / 12
 
+	// Initialize cookies before crawling
+	c.initCookies(ctx)
+
 	encodedKeyword := url.PathEscape(keyword)
 
 	for page <= maxPages {
@@ -199,6 +289,8 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 		if page > 1 {
 			pageURL = fmt.Sprintf("%s?page=%d", pageURL, page)
 		}
+
+		log.Info().Str("url", pageURL).Str("keyword", keyword).Int("page", page).Msg("Crawling keyword search")
 
 		html, err := c.fetchWithRetry(ctx, pageURL)
 		if err != nil {
@@ -221,6 +313,7 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 
 		// If first page returns empty, try headless browser
 		if page == 1 && len(videos) == 0 {
+			log.Warn().Msg("HTTP returned 0 videos for keyword search, trying browser")
 			browserVideos, browserErr := c.crawlWithBrowser(ctx, pageURL)
 			if browserErr == nil && len(browserVideos) > 0 {
 				videos = browserVideos
@@ -232,6 +325,7 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 		}
 
 		allVideos = append(allVideos, videos...)
+		log.Info().Int("pageCount", len(videos)).Int("total", len(allVideos)).Msg("Parsed keyword search videos")
 
 		if len(allVideos) >= limit {
 			allVideos = allVideos[:limit]
@@ -239,6 +333,7 @@ func (c *HTTPCrawler) CrawlByKeyword(ctx context.Context, keyword string, limit 
 		}
 
 		page++
+		time.Sleep(2 * time.Second)
 	}
 
 	return allVideos, nil
@@ -289,6 +384,14 @@ func (c *HTTPCrawler) fetchWithRetry(ctx context.Context, targetURL string) (str
 
 // fetch performs a single HTTP request
 func (c *HTTPCrawler) fetch(ctx context.Context, targetURL string) (string, error) {
+	// Add random delay to avoid being blocked (1-3 seconds like Java version)
+	delay := time.Duration(1000+rand.Intn(2000)) * time.Millisecond
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(delay):
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create request error: %w", err)
@@ -308,6 +411,12 @@ func (c *HTTPCrawler) fetch(ctx context.Context, targetURL string) (string, erro
 	}
 	defer resp.Body.Close()
 
+	log.Debug().
+		Int("status", resp.StatusCode).
+		Str("url", targetURL).
+		Str("finalURL", resp.Request.URL.String()).
+		Msg("HTTP response")
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP status %d", resp.StatusCode)
 	}
@@ -317,32 +426,47 @@ func (c *HTTPCrawler) fetch(ctx context.Context, targetURL string) (string, erro
 		return "", fmt.Errorf("read body error: %w", err)
 	}
 
-	return string(body), nil
+	html := string(body)
+	log.Debug().Int("length", len(html)).Msg("Received HTML")
+
+	return html, nil
 }
 
 // crawlWithBrowser uses headless browser to crawl a page
 func (c *HTTPCrawler) crawlWithBrowser(ctx context.Context, pageURL string) ([]*model.Video, error) {
+	log.Info().Str("url", pageURL).Msg("Starting browser crawl")
+
 	browser, err := c.getBrowser()
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to get browser instance")
 		return nil, err
 	}
 
 	html, err := browser.FetchRenderedHTML(ctx, pageURL, "div.group")
 	if err != nil {
+		log.Error().Err(err).Msg("Browser failed to fetch HTML")
 		return nil, err
 	}
 
-	// Debug: log HTML length
+	log.Info().Int("htmlLength", len(html)).Msg("Browser fetched HTML")
+
+	// Log first 500 chars for debugging
 	if len(html) > 0 {
-		// Log first 1000 chars for debugging
 		preview := html
-		if len(preview) > 1000 {
-			preview = preview[:1000]
+		if len(preview) > 500 {
+			preview = preview[:500]
 		}
-		log.Debug().Int("htmlLength", len(html)).Str("preview", preview).Msg("Browser fetched HTML")
+		log.Debug().Str("preview", preview).Msg("HTML preview")
 	}
 
-	return c.parser.ParseVideoList(html)
+	videos, err := c.parser.ParseVideoList(html)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to parse browser HTML")
+		return nil, err
+	}
+
+	log.Info().Int("count", len(videos)).Msg("Browser crawl completed")
+	return videos, nil
 }
 
 // crawlDetailWithBrowser uses headless browser to crawl video detail
