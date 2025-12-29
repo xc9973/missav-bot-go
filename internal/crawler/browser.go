@@ -132,7 +132,7 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 	}
 	defer page.Close()
 
-	// Set page timeout (longer for Cloudflare challenge)
+	// Set page timeout (longer for Cloudflare challenge) - use independent timeout, not ctx
 	page = page.Timeout(90 * time.Second)
 
 	// Set user agent
@@ -160,7 +160,7 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 	// Wait longer for Cloudflare challenge to complete (8 seconds)
 	time.Sleep(8 * time.Second)
 
-	// Try multiple selectors for video content
+	// Try multiple selectors for video content - use independent timeout
 	selectors := []string{waitSelector, "div.group", "div[class*=thumbnail]", "article", "main"}
 	found := false
 	
@@ -168,10 +168,9 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 		if selector == "" {
 			continue
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		page = page.Context(waitCtx)
-		elem, err := page.Element(selector)
-		cancel()
+		// Use a fresh page context with timeout, not the passed ctx
+		pageWithTimeout := page.Timeout(10 * time.Second)
+		elem, err := pageWithTimeout.Element(selector)
 		if err == nil && elem != nil {
 			log.Info().Str("selector", selector).Msg("Found target element")
 			found = true
@@ -186,9 +185,9 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 	// Additional wait for dynamic content
 	time.Sleep(3 * time.Second)
 
-	// Get rendered HTML - use a fresh context
-	page = page.Timeout(30 * time.Second)
-	html, err := page.HTML()
+	// Get rendered HTML - use a fresh timeout
+	pageWithTimeout := page.Timeout(30 * time.Second)
+	html, err := pageWithTimeout.HTML()
 	if err != nil {
 		return "", fmt.Errorf("failed to get HTML: %w", err)
 	}
