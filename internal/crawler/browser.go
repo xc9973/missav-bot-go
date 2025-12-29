@@ -133,7 +133,7 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 	defer page.Close()
 
 	// Set page timeout (longer for Cloudflare challenge)
-	page = page.Timeout(60 * time.Second)
+	page = page.Timeout(90 * time.Second)
 
 	// Set user agent
 	err = page.SetUserAgent(&proto.NetworkSetUserAgentOverride{
@@ -157,31 +157,37 @@ func (b *Browser) FetchRenderedHTML(ctx context.Context, url string, waitSelecto
 
 	log.Info().Msg("Page loaded, waiting for Cloudflare challenge...")
 
-	// Wait longer for Cloudflare challenge to complete (5 seconds)
-	time.Sleep(5 * time.Second)
+	// Wait longer for Cloudflare challenge to complete (8 seconds)
+	time.Sleep(8 * time.Second)
 
-	// Wait for specific selector if provided (max 20 seconds for content after Cloudflare)
-	if waitSelector != "" {
-		waitCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-
-		// Try to find the element with timeout
-		page = page.Context(waitCtx)
-		elem, err := page.Element(waitSelector)
-		if err != nil {
-			log.Warn().Str("selector", waitSelector).Err(err).Msg("Selector not found, continuing anyway")
-			// Selector not found within timeout, but continue anyway
-			// The page might still have useful content
-		} else {
-			log.Info().Str("selector", waitSelector).Msg("Found target element")
-			_ = elem // Use elem to avoid unused variable warning
+	// Try multiple selectors for video content
+	selectors := []string{waitSelector, "div.group", "div[class*=thumbnail]", "article", "main"}
+	found := false
+	
+	for _, selector := range selectors {
+		if selector == "" {
+			continue
 		}
+		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		page = page.Context(waitCtx)
+		elem, err := page.Element(selector)
+		cancel()
+		if err == nil && elem != nil {
+			log.Info().Str("selector", selector).Msg("Found target element")
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		log.Warn().Msg("No video selectors found, continuing anyway")
 	}
 
 	// Additional wait for dynamic content
 	time.Sleep(3 * time.Second)
 
-	// Get rendered HTML
+	// Get rendered HTML - use a fresh context
+	page = page.Timeout(30 * time.Second)
 	html, err := page.HTML()
 	if err != nil {
 		return "", fmt.Errorf("failed to get HTML: %w", err)
